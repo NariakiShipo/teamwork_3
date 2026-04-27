@@ -230,21 +230,21 @@ void get_role_color(const char* json, const char* role, char* out_color) {
 void make_move(const char* json, const char* my_role_ab) {
     char board[4][8][32];
     char my_color[10], opp_color[10];
+    
+    // 定義各種動作的候選清單
     MoveCandidate safe_captures[32];
-    MoveCandidate risky_captures[32];
+    MoveCandidate escape_moves[64]; // 用來避開危險的移動
     MoveCandidate safe_moves[64];
-    MoveCandidate risky_moves[64];
+    
     int safe_capture_count = 0;
-    int risky_capture_count = 0;
+    int escape_move_count = 0;
     int safe_move_count = 0;
-    int risky_move_count = 0;
 
     get_role_color(json, my_role_ab, my_color);
-
     srand((unsigned int)time(NULL));
-
     load_board(json, board);
 
+    // 如果還沒有確定的顏色，只能翻棋
     if (strcmp(my_color, "None") == 0) {
         int flip_r = 0;
         int flip_c = 0;
@@ -256,10 +256,15 @@ void make_move(const char* json, const char* my_role_ab) {
 
     strcpy(opp_color, strcmp(my_color, "Red") == 0 ? "Black" : "Red");
 
+    // 掃描棋盤上所有自己的棋子
     for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 8; c++) {
             if (!is_my_piece(board[r][c], my_color)) continue;
 
+            // 檢查這顆棋子目前是否處於危險之中（會被吃掉）
+            int is_currently_threatened = square_is_threatened(board, my_color, r, c);
+
+            // 檢查一般周圍 1 步的移動與攻擊
             for (int dr = -1; dr <= 1; dr++) {
                 for (int dc = -1; dc <= 1; dc++) {
                     if (abs(dr) + abs(dc) != 1) continue;
@@ -269,22 +274,25 @@ void make_move(const char* json, const char* my_role_ab) {
 
                     if (can_attack_piece(board, r, c, tr, tc)) {
                         MoveCandidate candidate = {r, c, tr, tc};
+                        // 確保吃完後自己不會處於危險
                         if (!square_is_threatened(board, my_color, tr, tc)) {
                             safe_captures[safe_capture_count++] = candidate;
-                        } else {
-                            risky_captures[risky_capture_count++] = candidate;
                         }
                     } else if (can_move_to(board, r, c, tr, tc)) {
                         MoveCandidate candidate = {r, c, tr, tc};
+                        // 確保移動後的位置是安全的
                         if (!square_is_threatened(board, my_color, tr, tc)) {
                             safe_moves[safe_move_count++] = candidate;
-                        } else {
-                            risky_moves[risky_move_count++] = candidate;
+                            // 如果目前有危險，且這步是安全的，列入優先逃脫清單
+                            if (is_currently_threatened) {
+                                escape_moves[escape_move_count++] = candidate;
+                            }
                         }
                     }
                 }
             }
 
+            // 針對「炮」的特殊隔山打牛攻擊邏輯
             if (piece_is_cannon(board[r][c])) {
                 for (int tr = 0; tr < 4; tr++) {
                     if (tr == r) continue;
@@ -292,8 +300,6 @@ void make_move(const char* json, const char* my_role_ab) {
                         MoveCandidate candidate = {r, c, tr, c};
                         if (!square_is_threatened(board, my_color, tr, c)) {
                             safe_captures[safe_capture_count++] = candidate;
-                        } else {
-                            risky_captures[risky_capture_count++] = candidate;
                         }
                     }
                 }
@@ -303,8 +309,6 @@ void make_move(const char* json, const char* my_role_ab) {
                         MoveCandidate candidate = {r, c, r, tc};
                         if (!square_is_threatened(board, my_color, r, tc)) {
                             safe_captures[safe_capture_count++] = candidate;
-                        } else {
-                            risky_captures[risky_capture_count++] = candidate;
                         }
                     }
                 }
@@ -312,36 +316,33 @@ void make_move(const char* json, const char* my_role_ab) {
         }
     }
 
+    // 1. 遇到旁邊可以吃的棋子，優先吃掉 (安全吃子)
     if (safe_capture_count > 0) {
         MoveCandidate chosen = safe_captures[rand() % safe_capture_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
 
-    if (risky_capture_count > 0) {
-        MoveCandidate chosen = risky_captures[rand() % risky_capture_count];
+    // 2. 遇到旁邊會被吃的棋子要避開 (優先逃脫)
+    if (escape_move_count > 0) {
+        MoveCandidate chosen = escape_moves[rand() % escape_move_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
 
+    // 3. 隨意走動 (安全的移動)
     if (safe_move_count > 0) {
         MoveCandidate chosen = safe_moves[rand() % safe_move_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
 
-    if (risky_move_count > 0) {
-        MoveCandidate chosen = risky_moves[rand() % risky_move_count];
-        send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
-        return;
-    }
-
+    // 4. 如果都沒辦法，就翻棋
     int flip_r = 0;
     int flip_c = 0;
     if (find_first_covered(board, &flip_r, &flip_c)) {
         send_flip_action(flip_r, flip_c);
     }
-
 }
 
 int main() {
