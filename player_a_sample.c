@@ -370,48 +370,42 @@ void make_move(const char* json, const char* my_role_ab) {
         }
     }
 
+// 步驟3：有得吃就吃
     if (safe_capture_count > 0) {
         MoveCandidate chosen = safe_captures[rand() % safe_capture_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
-
     if (risky_capture_count > 0) {
         MoveCandidate chosen = risky_captures[rand() % risky_capture_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
 
+    // 步驟2：沒得吃，先翻暗棋（步驟5：重複直到翻完）
+    {
+        int flip_r = 0, flip_c = 0;
+        if (find_farthest_covered(board, &flip_r, &flip_c)) {
+            send_flip_action(flip_r, flip_c);
+            return;
+        }
+    }
+
+    // 步驟4：所有暗棋翻完了才隨意走動
     if (safe_move_count > 0) {
         MoveCandidate chosen = safe_moves[rand() % safe_move_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
-
     if (risky_move_count > 0) {
         MoveCandidate chosen = risky_moves[rand() % risky_move_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
     }
-
-    // 第4項：隨意走動 - 沒有其他選擇時，隨意選擇任何可能的移動
     if (arbitrary_move_count > 0) {
         MoveCandidate chosen = arbitrary_moves[rand() % arbitrary_move_count];
         send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
-        printf("[Action] ARBITRARY_MOVE %d %d -> %d %d\n", chosen.r, chosen.c, chosen.tr, chosen.tc);
         return;
-    }
-
-    // 最後的備選方案：翻棋子
-    int flip_r = 0;
-    int flip_c = 0;
-    if (find_farthest_covered(board, &flip_r, &flip_c)) {
-        send_flip_action(flip_r, flip_c);
-        return;
-    }
-
-    if (find_first_covered(board, &flip_r, &flip_c)) {
-        send_flip_action(flip_r, flip_c);
     }
 }
 
@@ -431,6 +425,10 @@ int main() {
         receive_update(board_data, 4000);
         printf("%s", board_data);
         if (strlen(board_data) == 0) break;
+        if (strstr(board_data, "GAME_OVER") || strstr(board_data, "WIN") || strstr(board_data, "LOSE")) {
+            printf("Game over! Exiting...\n");
+            break;
+        }
         if (strstr(board_data, "UPDATE")) {
             // 解析總步數，避免重複處理相同的狀態
             int current_total_moves = -1;
