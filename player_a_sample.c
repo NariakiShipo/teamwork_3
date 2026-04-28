@@ -127,7 +127,8 @@ static int can_move_to(const char board[4][8][32], int sr, int sc, int tr, int t
     const char* mover = board[sr][sc];
 
     if (is_empty_or_hidden(mover) || !is_null_piece(board[tr][tc])) return 0;
-    if (piece_is_cannon(mover)) return abs(sr - tr) + abs(sc - tc) == 1;
+    // 所有棋子移動時只能移動一步 (包括炮)
+    if (sr != tr && sc != tc) return 0;  // 只能橫向或縱向
     return abs(sr - tr) + abs(sc - tc) == 1;
 }
 
@@ -151,6 +152,45 @@ static int find_first_covered(const char board[4][8][32], int* out_r, int* out_c
                 return 1;
             }
         }
+    }
+    return 0;
+}
+
+// 找到距離已翻棋子最遠的覆蓋棋子 (優化翻棋策略)
+static int find_farthest_covered(const char board[4][8][32], int* out_r, int* out_c) {
+    int best_r = -1, best_c = -1;
+    int max_distance = -1;
+
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 8; c++) {
+            if (is_covered_piece(board[r][c])) {
+                int min_dist = 100;
+                // 計算到最近已翻棋子的距離
+                for (int sr = 0; sr < 4; sr++) {
+                    for (int sc = 0; sc < 8; sc++) {
+                        if (!is_covered_piece(board[sr][sc]) && !is_null_piece(board[sr][sc])) {
+                            int dist = abs(r - sr) + abs(c - sc);
+                            if (dist < min_dist) min_dist = dist;
+                        }
+                    }
+                }
+                // 如果沒有已翻的棋子,就優先翻中心附近的
+                if (min_dist == 100) {
+                    min_dist = -(abs(r - 1.5) + abs(c - 3.5));
+                }
+                if (min_dist > max_distance) {
+                    max_distance = min_dist;
+                    best_r = r;
+                    best_c = c;
+                }
+            }
+        }
+    }
+
+    if (best_r != -1) {
+        *out_r = best_r;
+        *out_c = best_c;
+        return 1;
     }
     return 0;
 }
@@ -234,10 +274,12 @@ void make_move(const char* json, const char* my_role_ab) {
     MoveCandidate risky_captures[32];
     MoveCandidate safe_moves[64];
     MoveCandidate risky_moves[64];
+    MoveCandidate arbitrary_moves[128];  // 第4項：隨意走動 - 任何可能的移動
     int safe_capture_count = 0;
     int risky_capture_count = 0;
     int safe_move_count = 0;
     int risky_move_count = 0;
+    int arbitrary_move_count = 0;
 
     get_role_color(json, my_role_ab, my_color);
 
@@ -274,12 +316,20 @@ void make_move(const char* json, const char* my_role_ab) {
                         } else {
                             risky_captures[risky_capture_count++] = candidate;
                         }
+                        // 第4項：隨意走動 - 將所有吃子也加入任意移動清單
+                        if (arbitrary_move_count < 128) {
+                            arbitrary_moves[arbitrary_move_count++] = candidate;
+                        }
                     } else if (can_move_to(board, r, c, tr, tc)) {
                         MoveCandidate candidate = {r, c, tr, tc};
                         if (!square_is_threatened(board, my_color, tr, tc)) {
                             safe_moves[safe_move_count++] = candidate;
                         } else {
                             risky_moves[risky_move_count++] = candidate;
+                        }
+                        // 第4項：隨意走動 - 將所有移動也加入任意移動清單
+                        if (arbitrary_move_count < 128) {
+                            arbitrary_moves[arbitrary_move_count++] = candidate;
                         }
                     }
                 }
@@ -295,6 +345,10 @@ void make_move(const char* json, const char* my_role_ab) {
                         } else {
                             risky_captures[risky_capture_count++] = candidate;
                         }
+                        // 第4項：隨意走動
+                        if (arbitrary_move_count < 128) {
+                            arbitrary_moves[arbitrary_move_count++] = candidate;
+                        }
                     }
                 }
                 for (int tc = 0; tc < 8; tc++) {
@@ -305,6 +359,10 @@ void make_move(const char* json, const char* my_role_ab) {
                             safe_captures[safe_capture_count++] = candidate;
                         } else {
                             risky_captures[risky_capture_count++] = candidate;
+                        }
+                        // 第4項：隨意走動
+                        if (arbitrary_move_count < 128) {
+                            arbitrary_moves[arbitrary_move_count++] = candidate;
                         }
                     }
                 }
@@ -336,12 +394,25 @@ void make_move(const char* json, const char* my_role_ab) {
         return;
     }
 
+    // 第4項：隨意走動 - 沒有其他選擇時，隨意選擇任何可能的移動
+    if (arbitrary_move_count > 0) {
+        MoveCandidate chosen = arbitrary_moves[rand() % arbitrary_move_count];
+        send_move_action(chosen.r, chosen.c, chosen.tr, chosen.tc);
+        printf("[Action] ARBITRARY_MOVE %d %d -> %d %d\n", chosen.r, chosen.c, chosen.tr, chosen.tc);
+        return;
+    }
+
+    // 最後的備選方案：翻棋子
     int flip_r = 0;
     int flip_c = 0;
+    if (find_farthest_covered(board, &flip_r, &flip_c)) {
+        send_flip_action(flip_r, flip_c);
+        return;
+    }
+
     if (find_first_covered(board, &flip_r, &flip_c)) {
         send_flip_action(flip_r, flip_c);
     }
-
 }
 
 int main() {
